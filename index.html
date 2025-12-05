@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <title>Hypo-Track Maker</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
@@ -37,26 +38,9 @@
       font-size:10px;
       font-weight:bold;
     }
-    /* ---- Saffir-Simpson legend ---- */
-    #ssScale{
-      position:absolute;
-      bottom:20px;
-      left:10px;
-      z-index:1000;
-      background:rgba(255,255,255,.85);
-      padding:6px 8px;
-      border-radius:4px;
-      box-shadow:0 1px 5px rgba(0,0,0,.4);
-      font-size:12px;
-    }
-    .ss-bar{
-      display:flex;
-      height:14px;
-      width:220px;
-      border:1px solid #ccc;
-      margin:3px 0;
-    }
-    .ss-seg{flex:1}
+    /* saffir table in popup */
+    .ss-table{font-size:11px;border-collapse:collapse;margin-top:4px}
+    .ss-table td{border:1px solid #ccc;padding:2px 4px}
   </style>
 </head>
 <body>
@@ -69,23 +53,8 @@
     <button id="sbNew">New storm</button>
     <button id="sbExport" disabled>Export JSON</button>
     <div id="sbHint" style="font-size:11px;color:#666;margin-top:4px">
-      Click “New storm”, then click map to add points (4 pts = 1 day).
-    </div>
-  </div>
-
-  <!-- ---- Saffir-Simpson legend ---- -->
-  <div id="ssScale">
-    <b>Saffir-Simpson (kts)</b>
-    <div class="ss-bar">
-      <div class="ss-seg" style="background:#ffd800" title="TS 34-63"></div>
-      <div class="ss-seg" style="background:#ff7800" title="Cat-1 64-82"></div>
-      <div class="ss-seg" style="background:#ff3800" title="Cat-2 83-95"></div>
-      <div class="ss-seg" style="background:#c80000" title="Cat-3 96-112"></div>
-      <div class="ss-seg" style="background:#8c00ff" title="Cat-4 113-136"></div>
-      <div class="ss-seg" style="background:#5c00b0" title="Cat-5 ≥137"></div>
-    </div>
-    <div style="display:flex;justify-content:space-between;font-size:10px">
-      <span>TS</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span>
+      Click “New storm”, then click map to add points.<br>
+      <b>4 clicks = 1 day</b>
     </div>
   </div>
 
@@ -142,6 +111,27 @@
     return new Date(epochS*1000).toISOString().replace('T',' ').slice(0,16);
   }
 
+  /* saffir-simpson lookup (knots → category) */
+  function saffir(knots){
+    if(knots<33)return 0;
+    if(knots<=63)return 1;
+    if(knots<=82)return 2;
+    if(knots<=95)return 3;
+    if(knots<=112)return 4;
+    if(knots<=136)return 5;
+    return 6; // 137+
+  }
+  const ssTable=`
+    <table class="ss-table">
+      <tr><td>TD</td><td>&lt;33 kt</td></tr>
+      <tr><td>TS</td><td>34-63 kt</td></tr>
+      <tr><td>Cat 1</td><td>64-82 kt</td></tr>
+      <tr><td>Cat 2</td><td>83-95 kt</td></tr>
+      <tr><td>Cat 3</td><td>96-112 kt</td></tr>
+      <tr><td>Cat 4</td><td>113-136 kt</td></tr>
+      <tr><td>Cat 5</td><td>≥137 kt</td></tr>
+    </table>`;
+
   /* ---- panel buttons ---- */
   $('sbNew').onclick=()=>{
     sbName=$('sbName').value.trim()||'UNNAMED';
@@ -152,7 +142,7 @@
     sbLine=L.polyline([],{color:'#ff7800',weight:3}).addTo(map);
     sbActive=true;
     $('sbExport').disabled=false;
-    $('sbHint').textContent='Click map to add points (4 pts = 1 day).';
+    $('sbHint').textContent='Click map to add points (4 clicks = 1 day).';
   };
 
   $('sbExport').onclick=()=>{
@@ -182,8 +172,8 @@
     if(!sbActive)return;
     const lat=snap(e.latlng.lat), lon=snap(e.latlng.lng);
     const idx=sbPath.length;
-    const epoch=sbStartEpoch+idx*6*3600; // 6-hourly
-    const dayMark=(idx%4===0)?' 🗓️':''; // visual day separator
+    // 4 points = 1 day → jump 24 h instead of 6 h
+    const epoch=sbStartEpoch + idx*6*3600 + Math.floor(idx/4)*18*3600;
 
     const point={
       lat:lat, lon:lon, time:epoch,
@@ -196,18 +186,20 @@
       .setLatLng(e.latlng)
       .setContent(`
         <div style="font-size:13px">
-          Lat:${lat}° Lon:${lon}°${dayMark}<br>
+          Lat:${lat}° Lon:${lon}°<br>
           Speed(kt):<input id="pSpeed" type="number" value="${point.speed}" min="0" max="200" step="5"><br>
           Pressure(hPa):<input id="pPres" type="number" value="${point.pressure}" min="800" max="1020"><br>
           Class:<select id="pClass">
             <option value="0" ${point.class===0?'selected':''}>Disturbance</option>
             <option value="1" ${point.class===1?'selected':''}>TD/TS</option>
-            <option value="2" ${point.class===2?'selected':''}>Typhoon</option>
-            <option value="3" ${point.class===3?'selected':''}>STY</option>
-            <option value="4" ${point.class===4?'selected':''}>SuperTY</option>
-            <option value="5" ${point.class===5?'selected':''}>MegaTY</option>
+            <option value="2" ${point.class===2?'selected':''}>Cat 1</option>
+            <option value="3" ${point.class===3?'selected':''}>Cat 2</option>
+            <option value="4" ${point.class===4?'selected':''}>Cat 3</option>
+            <option value="5" ${point.class===5?'selected':''}>Cat 4</option>
+            <option value="6" ${point.class===6?'selected':''}>Cat 5</option>
           </select><br>
           <button id="pOK">OK</button>
+          ${ssTable}
         </div>`)
       .openOn(map);
 
