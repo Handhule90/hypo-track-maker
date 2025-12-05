@@ -169,19 +169,38 @@
         try{
           const arr = JSON.parse(e.target.result);
           if(!Array.isArray(arr)) throw "JSON is not an array";
-          arr.forEach(st=>{
-  if(!st.name || !st.path) throw "Bad storm object";
+        arr.forEach(st => {
+  if (!st.name || !st.path) throw "Bad storm object";
 
-  // Normalize longitude key: "long" -> "lon"
-  st.path.forEach(p=>{
+  // Clean path: fix keys and filter out invalid coords
+  st.path = st.path.filter(p => {
+    // Normalize longitude key
     if ('long' in p && !('lon' in p)) {
       p.lon = p.long;
       delete p.long;
     }
+
+    // Ensure lat/lon are valid numbers
+    const lat = parseFloat(p.lat);
+    const lon = parseFloat(p.lon);
+
+    if (isNaN(lat) || isNaN(lon)) {
+      console.warn(`Skipping invalid point in ${st.name}: lat=${p.lat}, lon=${p.lon}`);
+      return false;
+    }
+
+    p.lat = lat;
+    p.lon = lon;
+    return true;
   });
 
+  if (st.path.length === 0) {
+    console.warn(`Storm ${st.name} has no valid points — skipped.`);
+    return;
+  }
+
   ALL_STORMS.push(st);
-  renderStorm(st,false);
+  renderStorm(st, false);
 });
         }catch(err){alert(`Error reading ${file.name}:\n${err}`);}
       };
