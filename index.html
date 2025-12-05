@@ -76,10 +76,7 @@
   function classColor(c){
     return ['#888','#ffd800','#ff7800','#ff3800','#c80000','#8c00ff'][c]||'#888';
   }
-  function saffir(k){
-    if(k<33)return 0; if(k<=63)return 1; if(k<=82)return 2;
-    if(k<=95)return 3; if(k<=112)return 4; if(k<=136)return 5; return 6;
-  }
+  
   const ssTable=`
     <table class="ss-table">
       <tr><td>TD</td><td>&lt;33 kt</td></tr>
@@ -94,44 +91,54 @@
   /* render one storm (faint if not active) */
   function renderStorm(storm, faint){
     const pts = storm.path;
+    
+    // Safety check before mapping
+    if (!pts || pts.length === 0) return;
+
     /* ---------- SAFE COORDS ---------- */
-    const coords = pts.map(p => {
-      const lat = parseFloat(p.lat);
-      const lon = parseFloat(p.lon);
-      if (isNaN(lat) || isNaN(lon)) {
-        console.error(`Invalid LatLng in storm "${storm.name}" at time "${p.time}": lat=${p.lat}, lon=${p.lon}`);
-        throw new Error(`Invalid LatLng: (${p.lat}, ${p.lon})`);
-      }
-      return [lat, lon];
+    const coords = [];
+    pts.forEach(p => {
+        // Because we normalized in the import, these should be numbers. 
+        // We add a fallback just in case.
+        const lat = parseFloat(p.lat);
+        const lon = parseFloat(p.lon);
+        
+        if (!isNaN(lat) && !isNaN(lon)) {
+            coords.push([lat, lon]);
+        }
     });
+
+    if (coords.length === 0) return; // Don't draw empty storms
 
     const line = L.polyline(coords, {
       color: classColor(pts[pts.length-1].class),
       weight: 3,
       opacity: faint ? 0.35 : 1
     });
+    
     const dots = L.layerGroup();
     pts.forEach((p,i)=>{
       const lat = parseFloat(p.lat);
       const lon = parseFloat(p.lon);
-      if (isNaN(lat) || isNaN(lon)) {
-        console.error(`Invalid LatLng in storm "${storm.name}" at time "${p.time}": lat=${p.lat}, lon=${p.lon}`);
-        throw new Error(`Invalid LatLng: (${p.lat}, ${p.lon})`);
+      
+      if (!isNaN(lat) && !isNaN(lon)) {
+          const m = L.circleMarker([lat,lon],{
+            radius: 5,
+            color: classColor(p.class),
+            fillOpacity: 1,
+            opacity: faint ? 0.35 : 1
+          });
+          m.on('click',()=>openPointEditor(storm,i));
+          m.bindPopup(`<b>${storm.name}</b> #${i+1}<br>${p.time}<br>${p.speed} kt / ${p.pressure} hPa`);
+          dots.addLayer(m);
       }
-      const m = L.circleMarker([lat,lon],{
-        radius: 5,
-        color: classColor(p.class),
-        fillOpacity: 1,
-        opacity: faint ? 0.35 : 1
-      });
-      m.on('click',()=>openPointEditor(storm,i));
-      m.bindPopup(`<b>${storm.name}</b> #${i+1}<br>${p.time}<br>${p.speed} kt / ${p.pressure} hPa`);
-      dots.addLayer(m);
     });
+    
     const layer = L.layerGroup([line,dots]);
     layer.addTo(map);
     storm._layer = layer;   // store for removal
   }
+
   function redrawAllFaint(){
     ALL_STORMS.forEach(s=>{
       if(s._layer) map.removeLayer(s._layer);
@@ -161,6 +168,7 @@
     if(EDIT_POPUP) map.closePopup();
     EDIT_POPUP = L.popup({maxWidth:250}).setLatLng([parseFloat(p.lat),parseFloat(p.lon)]).setContent(html).openOn(map);
   };
+
   window.savePointEdit = function(stormIdx, ptIdx){
     const storm = ALL_STORMS[stormIdx];
     const p = storm.path[ptIdx];
@@ -177,7 +185,7 @@
   };
 
   /* =========================================================
-     5.  FILE IMPORT
+     5.  FILE IMPORT (ROBUST FIX)
      ========================================================= */
   document.getElementById('file').addEventListener('change', ev=>{
     [...ev.target.files].forEach(file=>{
@@ -186,35 +194,53 @@
         try{
           const arr = JSON.parse(e.target.result);
           if(!Array.isArray(arr)) throw "JSON is not an array";
+          
           arr.forEach(st=>{
-            if(!st.name || !st.path) throw "Bad storm object";
+            if(!st.name || !st.path) {
+                console.warn("Skipping invalid storm object", st);
+                return;
+            }
 
-            /* ---------- NORMALIZE & FILTER ---------- */
-            st.path = st.path.filter(p=>{
-              if ('long' in p && !('lon' in p)) {
-                p.lon = p.long;
-                delete p.long;
-              }
+            /* ---------- ROBUST NORMALIZE & FILTER ---------- */
+            st.path = st.path.filter(p => {
+              // 1. Detect any variation of Longitude
+              let rawLon = undefined;
+              if (p.lon !== undefined) rawLon = p.lon;
+              else if (p.long !== undefined) rawLon = p.long; // Handle 'long'
+              else if (p.lng !== undefined) rawLon = p.lng;   // Handle 'lng' (Leaflet default)
+
               const lat = parseFloat(p.lat);
-              const lon = parseFloat(p.lon);
+              const lon = parseFloat(rawLon);
+
+              // 2. Validate
               if (isNaN(lat) || isNaN(lon)) {
-                console.warn(`Skipping invalid point in ${st.name}: lat=${p.lat}, lon=${p.lon}`);
-                return false;
+                console.warn(`Skipping invalid point in ${st.name}:`, p);
+                return false; // Remove this point from the path
               }
+
+              // 3. Standardize properties
               p.lat = lat;
               p.lon = lon;
+              
+              // Clean up old keys if they exist
+              if (p.long !== undefined) delete p.long;
+              if (p.lng !== undefined) delete p.lng;
+
               return true;
             });
 
             if (st.path.length === 0) {
-              console.warn(`Storm ${st.name} has no valid points — skipped.`);
+              console.warn(`Storm ${st.name} has no valid points after filtering.`);
               return;
             }
 
             ALL_STORMS.push(st);
             renderStorm(st,false);
           });
-        }catch(err){alert(`Error reading ${file.name}:\n${err}`);}
+        } catch(err) {
+            alert(`Error reading ${file.name}:\n${err}`);
+            console.error(err);
+        }
       };
       reader.readAsText(file);
     });
@@ -225,6 +251,11 @@
      ========================================================= */
   const $=id=>document.getElementById(id);
   $('sbStart').value=new Date().toISOString().slice(0,16);
+
+  function fmtTime(epochS){
+    return new Date(epochS*1000).toISOString().replace('T',' ').slice(0,16);
+  }
+  function snap(v){return Math.round(v*10)/10;}
 
   $('sbNew').onclick=()=>{
     // finish previous draw if any
@@ -247,6 +278,7 @@
     const name=$('sbName').value.trim()||'UNNAMED';
     const startEpoch=Math.floor(new Date($('sbStart').value).getTime()/1000);
     if(!startEpoch){alert('Pick a valid start date/time');return;}
+    
     ACTIVE_DRAW={
       name:name,
       startEpoch:startEpoch,
@@ -292,16 +324,12 @@
   /* =========================================================
      8.  DRAW CLICK HANDLER
      ========================================================= */
-  function fmtTime(epochS){
-    return new Date(epochS*1000).toISOString().replace('T',' ').slice(0,16);
-  }
-  function snap(v){return Math.round(v*10)/10;}
-
   map.on('click',e=>{
     if(!ACTIVE_DRAW)return;
     const lat=snap(e.latlng.lat);
     const lon=snap(e.latlng.lng);
     if(isNaN(lat)||isNaN(lon))return; // guard
+    
     const idx=ACTIVE_DRAW.points.length;
     // 4 points = 1 day → 24 h jump
     const epoch=ACTIVE_DRAW.startEpoch + idx*6*3600 + Math.floor(idx/4)*18*3600;
@@ -328,16 +356,22 @@
       .setContent(html)
       .openOn(map);
 
-    document.getElementById('pOK').onclick=()=>{
-      point.speed=document.getElementById('pSpeed').value;
-      point.pressure=document.getElementById('pPres').value;
-      point.class=parseInt(document.getElementById('pClass').value);
-      ACTIVE_DRAW.points.push(point);
-      ACTIVE_DRAW.line.addLatLng([lat,lon]);
-      L.marker([lat,lon],{icon:L.divIcon({className:'sb-marker',html:idx||'',iconSize:[14,14]})}).addTo(ACTIVE_DRAW.dots);
-      map.closePopup();
-    };
+    // Use event delegation or check existence due to popup delay
+    setTimeout(() => {
+        const btn = document.getElementById('pOK');
+        if(btn) {
+            btn.onclick=()=>{
+              point.speed=document.getElementById('pSpeed').value;
+              point.pressure=document.getElementById('pPres').value;
+              point.class=parseInt(document.getElementById('pClass').value);
+              ACTIVE_DRAW.points.push(point);
+              ACTIVE_DRAW.line.addLatLng([lat,lon]);
+              L.marker([lat,lon],{icon:L.divIcon({className:'sb-marker',html:idx||'',iconSize:[14,14]})}).addTo(ACTIVE_DRAW.dots);
+              map.closePopup();
+            };
+        }
+    }, 100);
   });
-  </script>
+</script>
 </body>
 </html>
