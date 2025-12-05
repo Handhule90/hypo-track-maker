@@ -170,10 +170,19 @@
           const arr = JSON.parse(e.target.result);
           if(!Array.isArray(arr)) throw "JSON is not an array";
           arr.forEach(st=>{
-            if(!st.name || !st.path) throw "Bad storm object";
-            ALL_STORMS.push(st);
-            renderStorm(st,false);
-          });
+  if(!st.name || !st.path) throw "Bad storm object";
+
+  // Normalize longitude key: "long" -> "lon"
+  st.path.forEach(p=>{
+    if ('long' in p && !('lon' in p)) {
+      p.lon = p.long;
+      delete p.long;
+    }
+  });
+
+  ALL_STORMS.push(st);
+  renderStorm(st,false);
+});
         }catch(err){alert(`Error reading ${file.name}:\n${err}`);}
       };
       reader.readAsText(file);
