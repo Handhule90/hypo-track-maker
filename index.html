@@ -232,7 +232,8 @@
       ACTIVE_PATH=null;
     }
     if(!ALL_STORMS.length){alert('No storms to export');return;}
-    const blob=new Blob([JSON.stringify(ALL_STORMS,null,2)],{type:'application/json'});
+    const exportData = ALL_STORMS.map(s => ({name:s.name, start_time:s.start_time, path:s.path}));
+const blob=new Blob([JSON.stringify(exportData,null,2)],{type:'application/json'});
     const a=Object.assign(document.createElement('a'),{
       href:URL.createObjectURL(blob),
       download:'myStorms.json'
