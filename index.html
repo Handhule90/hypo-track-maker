@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Hypo-Track Maker / Loader</title>
+  <title>Hypo-Track Maker / Loader (Robust)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -73,6 +73,7 @@
   /* =========================================================
      3.  DATA NORMALIZATION (THE FIX)
      ========================================================= */
+  // This function handles "lon" vs "long" vs "lng" automatically
   function normalizeStormData(arr) {
     if (!Array.isArray(arr)) throw new Error("JSON must be an array of storms");
     
@@ -94,7 +95,7 @@
 
             // 3. Reject invalid points immediately
             if (isNaN(lat) || isNaN(lon)) {
-                console.warn("Skipping invalid point:", p);
+                console.warn("Skipping invalid point (NaN coords):", p);
                 return null;
             }
 
@@ -102,7 +103,7 @@
             return {
                 time: p.time || "",
                 lat: lat,
-                lon: lon, // standardized key
+                lon: lon, // We standardize on 'lon' internally
                 speed: p.speed || 0,
                 pressure: p.pressure || 1000,
                 class: p.class !== undefined ? p.class : 0
@@ -182,7 +183,12 @@
     const p = storm.path[ptIdx];
     // Simple ISO string fix for datetime-local input
     let valTime = "";
-    try { valTime = new Date(p.time).toISOString().slice(0,16); } catch(e){}
+    try { 
+        // handle slight format variations
+        let d = new Date(p.time);
+        if(isNaN(d.getTime())) d = new Date(p.time.replace(' ', 'T')); 
+        valTime = d.toISOString().slice(0,16); 
+    } catch(e){}
     
     const html=`
       <div style="font-size:13px">
@@ -209,7 +215,11 @@
         const btn = document.getElementById('eBtnSave');
         if(btn) btn.onclick = () => {
             storm.name = document.getElementById('eName').value.trim()||'UNNAMED';
-            p.time = document.getElementById('eTime').value.replace('T',' ');
+            
+            // Format time back to simple string
+            let tVal = document.getElementById('eTime').value;
+            p.time = tVal.replace('T',' ');
+
             p.lat = parseFloat(document.getElementById('eLat').value);
             p.lon = parseFloat(document.getElementById('eLon').value);
             p.speed = document.getElementById('eSpeed').value;
@@ -239,7 +249,7 @@
           const cleanStorms = normalizeStormData(rawJSON);
           
           if(cleanStorms.length === 0) {
-              alert("No valid storm data found in " + file.name);
+              alert("No valid storm data found in " + file.name + "\nCheck console for details.");
               return;
           }
 
@@ -322,10 +332,18 @@
     }
     if(!ALL_STORMS.length){alert('No storms to export');return;}
     
+    // Normalize export to 'lon'
     const exportData = ALL_STORMS.map(s=>({
         name: s.name, 
         start_time: s.start_time, 
-        path: s.path // already standardized to 'lat'/'lon'
+        path: s.path.map(p => ({
+            time: p.time,
+            lat: p.lat,
+            lon: p.lon, // Ensure this is consistently 'lon'
+            speed: p.speed,
+            pressure: p.pressure,
+            class: p.class
+        }))
     }));
     
     const blob=new Blob([JSON.stringify(exportData,null,2)],{type:'application/json'});
