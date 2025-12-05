@@ -94,14 +94,31 @@
   /* render one storm (faint if not active) */
   function renderStorm(storm, faint){
     const pts = storm.path;
-    const line = L.polyline(pts.map(p=>[p.lat,p.lon]), {
+    /* ---------- SAFE COORDS ---------- */
+    const coords = pts.map(p => {
+      const lat = parseFloat(p.lat);
+      const lon = parseFloat(p.lon);
+      if (isNaN(lat) || isNaN(lon)) {
+        console.error(`Invalid LatLng in storm "${storm.name}" at time "${p.time}": lat=${p.lat}, lon=${p.lon}`);
+        throw new Error(`Invalid LatLng: (${p.lat}, ${p.lon})`);
+      }
+      return [lat, lon];
+    });
+
+    const line = L.polyline(coords, {
       color: classColor(pts[pts.length-1].class),
       weight: 3,
       opacity: faint ? 0.35 : 1
     });
     const dots = L.layerGroup();
     pts.forEach((p,i)=>{
-      const m = L.circleMarker([p.lat,p.lon],{
+      const lat = parseFloat(p.lat);
+      const lon = parseFloat(p.lon);
+      if (isNaN(lat) || isNaN(lon)) {
+        console.error(`Invalid LatLng in storm "${storm.name}" at time "${p.time}": lat=${p.lat}, lon=${p.lon}`);
+        throw new Error(`Invalid LatLng: (${p.lat}, ${p.lon})`);
+      }
+      const m = L.circleMarker([lat,lon],{
         radius: 5,
         color: classColor(p.class),
         fillOpacity: 1,
@@ -142,7 +159,7 @@
         ${ssTable}
       </div>`;
     if(EDIT_POPUP) map.closePopup();
-    EDIT_POPUP = L.popup({maxWidth:250}).setLatLng([p.lat,p.lon]).setContent(html).openOn(map);
+    EDIT_POPUP = L.popup({maxWidth:250}).setLatLng([parseFloat(p.lat),parseFloat(p.lon)]).setContent(html).openOn(map);
   };
   window.savePointEdit = function(stormIdx, ptIdx){
     const storm = ALL_STORMS[stormIdx];
@@ -169,39 +186,34 @@
         try{
           const arr = JSON.parse(e.target.result);
           if(!Array.isArray(arr)) throw "JSON is not an array";
-        arr.forEach(st => {
-  if (!st.name || !st.path) throw "Bad storm object";
+          arr.forEach(st=>{
+            if(!st.name || !st.path) throw "Bad storm object";
 
-  // Clean path: fix keys and filter out invalid coords
-  st.path = st.path.filter(p => {
-    // Normalize longitude key
-    if ('long' in p && !('lon' in p)) {
-      p.lon = p.long;
-      delete p.long;
-    }
+            /* ---------- NORMALIZE & FILTER ---------- */
+            st.path = st.path.filter(p=>{
+              if ('long' in p && !('lon' in p)) {
+                p.lon = p.long;
+                delete p.long;
+              }
+              const lat = parseFloat(p.lat);
+              const lon = parseFloat(p.lon);
+              if (isNaN(lat) || isNaN(lon)) {
+                console.warn(`Skipping invalid point in ${st.name}: lat=${p.lat}, lon=${p.lon}`);
+                return false;
+              }
+              p.lat = lat;
+              p.lon = lon;
+              return true;
+            });
 
-    // Ensure lat/lon are valid numbers
-    const lat = parseFloat(p.lat);
-    const lon = parseFloat(p.lon);
+            if (st.path.length === 0) {
+              console.warn(`Storm ${st.name} has no valid points — skipped.`);
+              return;
+            }
 
-    if (isNaN(lat) || isNaN(lon)) {
-      console.warn(`Skipping invalid point in ${st.name}: lat=${p.lat}, lon=${p.lon}`);
-      return false;
-    }
-
-    p.lat = lat;
-    p.lon = lon;
-    return true;
-  });
-
-  if (st.path.length === 0) {
-    console.warn(`Storm ${st.name} has no valid points — skipped.`);
-    return;
-  }
-
-  ALL_STORMS.push(st);
-  renderStorm(st, false);
-});
+            ALL_STORMS.push(st);
+            renderStorm(st,false);
+          });
         }catch(err){alert(`Error reading ${file.name}:\n${err}`);}
       };
       reader.readAsText(file);
