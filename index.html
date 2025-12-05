@@ -4,13 +4,11 @@
   <meta charset="utf-8">
   <title>Hypo-Track Maker</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
     html,body{margin:0;height:100%}
     #map{height:100%;width:100%}
-    /* ---- storm-builder panel ---- */
     #stormBuilder{
       position:absolute;
       top:70px;
@@ -38,7 +36,6 @@
       font-size:10px;
       font-weight:bold;
     }
-    /* saffir table in popup */
     .ss-table{font-size:11px;border-collapse:collapse;margin-top:4px}
     .ss-table td{border:1px solid #ccc;padding:2px 4px}
   </style>
@@ -51,7 +48,7 @@
     <input id="sbName" placeholder="Storm name" value="MYSTORM">
     <input id="sbStart" type="datetime-local" step="1">
     <button id="sbNew">New storm</button>
-    <button id="sbExport" disabled>Export JSON</button>
+    <button id="sbExport">Export ALL storms</button>
     <div id="sbHint" style="font-size:11px;color:#666;margin-top:4px">
       Click “New storm”, then click map to add points.<br>
       <b>4 clicks = 1 day</b>
@@ -60,58 +57,26 @@
 
   <script>
   /* =========================================================
-     1.  ORIGINAL VIEWER CODE (minimalised)
+     1.  BASE MAP
      ========================================================= */
   const map = L.map('map').setView([15, 135], 5);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; OSM contributors'
   }).addTo(map);
 
-  let shownLayer = L.layerGroup().addTo(map);
+  /* =========================================================
+     2.  GLOBAL STORAGE
+     ========================================================= */
+  const ALL_STORMS = [];          // every finished storm
+  let ACTIVE_PATH = null;         // {name, startEpoch, points[], line, dots}
+  let ACTIVE_POPUP = null;        // reuse for point editor
 
-  /* quick colour per class */
+  /* =========================================================
+     3.  DRAW / UPDATE STORMS
+     ========================================================= */
   function classColor(c){
     return ['#888','#ffd800','#ff7800','#ff3800','#c80000','#8c00ff'][c]||'#888';
   }
-
-  /* draw one storm */
-  function drawStorm(storm){
-    const pts = storm.path;
-    const line = L.polyline(pts.map(p=>[p.lat,p.long]), {
-      color: classColor(pts[pts.length-1].class),
-      weight: 3
-    });
-    const dots = L.layerGroup();
-    pts.forEach((p,i)=>{
-      L.circleMarker([p.lat,p.long],{
-        radius: 5,
-        color: classColor(p.class),
-        fillOpacity: 1
-      }).bindPopup(`<b>${storm.name}</b><br>${p.time}<br>${p.speed} kt / ${p.pressure} hPa`).addTo(dots);
-    });
-    shownLayer.addLayer(L.layerGroup([line,dots]));
-  }
-
-  /* demo: load wp_2020_data.json if it exists */
-  fetch('wp_2020_data.json')
-    .then(r=>r.json())
-    .then(arr=> arr.forEach(drawStorm))
-    .catch(()=>console.log('wp_2020_data.json not found – draw your own storm'));
-
-  /* =========================================================
-     2.  STORM-BUILDER ADD-ON
-     ========================================================= */
-  let sbActive=false, sbPath=[], sbStartEpoch, sbName, sbLine;
-  const sbMarkers = L.layerGroup().addTo(map);
-  const $=id=>document.getElementById(id);
-  $('sbStart').value=new Date().toISOString().slice(0,16);
-
-  function snap(v){return Math.round(v*10)/10;}
-  function fmtTime(epochS){
-    return new Date(epochS*1000).toISOString().replace('T',' ').slice(0,16);
-  }
-
-  /* saffir-simpson lookup (knots → category) */
   function saffir(knots){
     if(knots<33)return 0;
     if(knots<=63)return 1;
@@ -119,7 +84,7 @@
     if(knots<=95)return 3;
     if(knots<=112)return 4;
     if(knots<=136)return 5;
-    return 6; // 137+
+    return 6;
   }
   const ssTable=`
     <table class="ss-table">
@@ -132,87 +97,217 @@
       <tr><td>Cat 5</td><td>≥137 kt</td></tr>
     </table>`;
 
-  /* ---- panel buttons ---- */
+  /* render one storm (transparent if not active) */
+  function renderStorm(storm, transparent){
+    const pts = storm.path;
+    const line = L.polyline(pts.map(p=>[p.lat,p.lon]), {
+      color: classColor(pts[pts.length-1].class),
+      weight: 3,
+      opacity: transparent ? 0.35 : 1
+    });
+    const dots = L.layerGroup();
+    pts.forEach((p,i)=>{
+      const m = L.circleMarker([p.lat,p.lon],{
+        radius: 5,
+        color: classColor(p.class),
+        fillOpacity: 1,
+        opacity: transparent ? 0.35 : 1
+      });
+      m.bindPopup(`
+        <b>${storm.name}</b> point ${i+1}/${pts.length}<br>
+        Time: ${p.time}<br>
+        Lat: ${p.lat}°  Lon: ${p.lon}°<br>
+        Speed: ${p.speed} kt  Pressure: ${p.pressure} hPa<br>
+        Class: ${p.class}  (SS: Cat ${saffir(parseInt(p.speed))})<br>
+        <button onclick="editPoint(${ALL_STORMS.indexOf(storm)},${i})">Edit this point</button>`);
+      dots.addLayer(m);
+    });
+    const layer = L.layerGroup([line,dots]);
+    layer.addTo(map);
+    storm._layer = layer;        // store so we can remove when redraw needed
+  }
+
+  /* redraw all storms except the active one (make them faint) */
+  function redrawAllFaint(){
+    ALL_STORMS.forEach(s=>{
+      if (s._layer) map.removeLayer(s._layer);
+      renderStorm(s, true);
+    });
+  }
+
+  /* =========================================================
+     4.  POINT EDITOR
+     ========================================================= */
+  window.editPoint = function(stormIdx, ptIdx){
+    const storm = ALL_STORMS[stormIdx];
+    const p = storm.path[ptIdx];
+    const html=`
+      <div style="font-size:13px">
+        <b>Edit point</b><br>
+        Name:<input id="eName" value="${storm.name}"><br>
+        Date/time:<input id="eTime" type="datetime-local" value="${p.time.replace(' ','T')}"><br>
+        Lat:<input id="eLat" type="number" step="0.1" value="${p.lat}"><br>
+        Lon:<input id="eLon" type="number" step="0.1" value="${p.lon}"><br>
+        Speed(kt):<input id="eSpeed" type="number" min="0" max="200" step="1" value="${p.speed}"><br>
+        Pressure(hPa):<input id="ePres" type="number" min="800" max="1030" value="${p.pressure}"><br>
+        Class:<select id="eClass">${[0,1,2,3,4,5,6].map(c=>`<option value="${c}" ${p.class==c?'selected':''}>${c}</option>`).join('')}</select><br>
+        <button onclick="saveEdit(${stormIdx},${ptIdx})">Save</button>
+        ${ssTable}
+      </div>`;
+    if(ACTIVE_POPUP) map.closePopup();
+    ACTIVE_POPUP = L.popup({maxWidth:250})
+      .setLatLng([p.lat,p.lon])
+      .setContent(html)
+      .openOn(map);
+  };
+  window.saveEdit = function(stormIdx, ptIdx){
+    const storm = ALL_STORMS[stormIdx];
+    storm.name = document.getElementById('eName').value.trim()||'UNNAMED';
+    storm.path[ptIdx].time = document.getElementById('eTime').value.replace('T',' ');
+    storm.path[ptIdx].lat = parseFloat(document.getElementById('eLat').value);
+    storm.path[ptIdx].lon = parseFloat(document.getElementById('eLon').value);
+    storm.path[ptIdx].speed = document.getElementById('eSpeed').value;
+    storm.path[ptIdx].pressure = document.getElementById('ePres').value;
+    storm.path[ptIdx].class = parseInt(document.getElementById('eClass').value);
+    map.closePopup(); ACTIVE_POPUP=null;
+    // redraw
+    if(storm._layer) map.removeLayer(storm._layer);
+    renderStorm(storm, ACTIVE_PATH && storm!==ACTIVE_PATH);
+  };
+
+  /* =========================================================
+     5.  NEW-STORM WORKFLOW
+     ========================================================= */
+  const $=id=>document.getElementById(id);
+  $('sbStart').value=new Date().toISOString().slice(0,16);
+
   $('sbNew').onclick=()=>{
-    sbName=$('sbName').value.trim()||'UNNAMED';
-    sbStartEpoch=Math.floor(new Date($('sbStart').value).getTime()/1000);
-    if(!sbStartEpoch){alert('Pick a valid start date/time');return;}
-    sbPath=[]; sbMarkers.clearLayers();
-    if(sbLine)map.removeLayer(sbLine);
-    sbLine=L.polyline([],{color:'#ff7800',weight:3}).addTo(map);
-    sbActive=true;
-    $('sbExport').disabled=false;
+    // finalize previous if any
+    if(ACTIVE_PATH && ACTIVE_PATH.points.length){
+      ALL_STORMS.push({
+        name: ACTIVE_PATH.name,
+        start_time: ACTIVE_PATH.startEpoch,
+        path: ACTIVE_PATH.points.map(p=>({
+          time: fmtTime(p.time),
+          lat: p.lat,
+          lon: p.lon,
+          speed: p.speed,
+          pressure: p.pressure,
+          class: p.class
+        }))
+      });
+    }
+    // start new
+    const name=$('sbName').value.trim()||'UNNAMED';
+    const startEpoch=Math.floor(new Date($('sbStart').value).getTime()/1000);
+    if(!startEpoch){alert('Pick a valid start date/time');return;}
+    ACTIVE_PATH={
+      name:name,
+      startEpoch:startEpoch,
+      points:[],
+      line:L.polyline([],{color:'#ff7800',weight:3}).addTo(map),
+      dots:L.layerGroup().addTo(map)
+    };
+    redrawAllFaint();   // make older storms faint
     $('sbHint').textContent='Click map to add points (4 clicks = 1 day).';
   };
 
   $('sbExport').onclick=()=>{
-    if(!sbPath.length){alert('No points added yet');return;}
-    const obj={
-      name:sbName.toUpperCase(),
-      start_time:sbStartEpoch,
-      path:sbPath.map(p=>({
-        time:fmtTime(p.time),
-        lat:p.lat,
-        long:p.lon,
-        speed:p.speed,
-        pressure:p.pressure,
-        class:p.class
-      }))
-    };
-    const blob=new Blob([JSON.stringify([obj],null,2)],{type:'application/json'});
+    // finish active if any
+    if(ACTIVE_PATH && ACTIVE_PATH.points.length){
+      ALL_STORMS.push({
+        name: ACTIVE_PATH.name,
+        start_time: ACTIVE_PATH.startEpoch,
+        path: ACTIVE_PATH.points.map(p=>({
+          time: fmtTime(p.time),
+          lat: p.lat,
+          lon: p.lon,
+          speed: p.speed,
+          pressure: p.pressure,
+          class: p.class
+        }))
+      });
+      map.removeLayer(ACTIVE_PATH.line);
+      map.removeLayer(ACTIVE_PATH.dots);
+      ACTIVE_PATH=null;
+    }
+    if(!ALL_STORMS.length){alert('No storms to export');return;}
+    const blob=new Blob([JSON.stringify(ALL_STORMS,null,2)],{type:'application/json'});
     const a=Object.assign(document.createElement('a'),{
       href:URL.createObjectURL(blob),
-      download:(sbName.toLowerCase()||'storm')+'.json'
+      download:'myStorms.json'
     });
     document.body.appendChild(a); a.click(); a.remove();
   };
 
-  /* ---- map clicks ---- */
+  /* =========================================================
+     6.  MAP CLICK WHILE DRAWING
+     ========================================================= */
+  function fmtTime(epochS){
+    return new Date(epochS*1000).toISOString().replace('T',' ').slice(0,16);
+  }
+  function snap(v){return Math.round(v*10)/10;}
+
   map.on('click',e=>{
-    if(!sbActive)return;
+    if(!ACTIVE_PATH)return;
     const lat=snap(e.latlng.lat), lon=snap(e.latlng.lng);
-    const idx=sbPath.length;
-    // 4 points = 1 day → jump 24 h instead of 6 h
-    const epoch=sbStartEpoch + idx*6*3600 + Math.floor(idx/4)*18*3600;
+    const idx=ACTIVE_PATH.points.length;
+    // 4 points = 1 day → 24 h jump
+    const epoch=ACTIVE_PATH.startEpoch + idx*6*3600 + Math.floor(idx/4)*18*3600;
 
     const point={
       lat:lat, lon:lon, time:epoch,
-      speed:idx?sbPath[idx-1].speed:'35',
-      pressure:idx?sbPath[idx-1].pressure:'1000',
-      class:idx?sbPath[idx-1].class:1
+      speed:idx?ACTIVE_PATH.points[idx-1].speed:'35',
+      pressure:idx?ACTIVE_PATH.points[idx-1].pressure:'1000',
+      class:idx?ACTIVE_PATH.points[idx-1].class:1
     };
 
-    const popup=L.popup({autoClose:false,closeOnClick:false})
+    const html=`
+      <div style="font-size:13px">
+        Lat:${lat}° Lon:${lon}°<br>
+        Speed(kt):<input id="pSpeed" type="number" value="${point.speed}" min="0" max="200" step="5"><br>
+        Pressure(hPa):<input id="pPres" type="number" value="${point.pressure}" min="800" max="1030"><br>
+        Class:<select id="pClass">
+          <option value="0" ${point.class===0?'selected':''}>Disturbance</option>
+          <option value="1" ${point.class===1?'selected':''}>TD/TS</option>
+          <option value="2" ${point.class===2?'selected':''}>Cat 1</option>
+          <option value="3" ${point.class===3?'selected':''}>Cat 2</option>
+          <option value="4" ${point.class===4?'selected':''}>Cat 3</option>
+          <option value="5" ${point.class===5?'selected':''}>Cat 4</option>
+          <option value="6" ${point.class===6?'selected':''}>Cat 5</option>
+        </select><br>
+        <button id="pOK">OK</button>
+        ${ssTable}
+      </div>`;
+
+    L.popup({autoClose:false,closeOnClick:false})
       .setLatLng(e.latlng)
-      .setContent(`
-        <div style="font-size:13px">
-          Lat:${lat}° Lon:${lon}°<br>
-          Speed(kt):<input id="pSpeed" type="number" value="${point.speed}" min="0" max="200" step="5"><br>
-          Pressure(hPa):<input id="pPres" type="number" value="${point.pressure}" min="800" max="1020"><br>
-          Class:<select id="pClass">
-            <option value="0" ${point.class===0?'selected':''}>Disturbance</option>
-            <option value="1" ${point.class===1?'selected':''}>TD/TS</option>
-            <option value="2" ${point.class===2?'selected':''}>Cat 1</option>
-            <option value="3" ${point.class===3?'selected':''}>Cat 2</option>
-            <option value="4" ${point.class===4?'selected':''}>Cat 3</option>
-            <option value="5" ${point.class===5?'selected':''}>Cat 4</option>
-            <option value="6" ${point.class===6?'selected':''}>Cat 5</option>
-          </select><br>
-          <button id="pOK">OK</button>
-          ${ssTable}
-        </div>`)
+      .setContent(html)
       .openOn(map);
 
     document.getElementById('pOK').onclick=()=>{
       point.speed=document.getElementById('pSpeed').value;
       point.pressure=document.getElementById('pPres').value;
       point.class=parseInt(document.getElementById('pClass').value);
-      sbPath.push(point);
-      sbLine.addLatLng([lat,lon]);
-      L.marker([lat,lon],{icon:L.divIcon({className:'sb-marker',html:idx||'',iconSize:[14,14]})}).addTo(sbMarkers);
+      ACTIVE_PATH.points.push(point);
+      ACTIVE_PATH.line.addLatLng([lat,lon]);
+      L.marker([lat,lon],{icon:L.divIcon({className:'sb-marker',html:idx||'',iconSize:[14,14]})}).addTo(ACTIVE_PATH.dots);
       map.closePopup();
     };
   });
+
+  /* =========================================================
+     7.  LOAD EXTERNAL JSON (optional demo)
+     ========================================================= */
+  fetch('wp_2020_data.json')
+    .then(r=>r.json())
+    .then(arr=>{
+      arr.forEach(st=>{
+        ALL_STORMS.push(st);
+        renderStorm(st,false);
+      });
+    })
+    .catch(()=>console.log('wp_2020_data.json not found – draw your own storms'));
   </script>
 </body>
 </html>
