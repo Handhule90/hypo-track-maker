@@ -113,6 +113,10 @@
       font-size: 12px;
       white-space: nowrap;
     }
+    .first-point {
+      stroke: #000;
+      stroke-width: 2;
+    }
   </style>
 </head>
 <body>
@@ -125,16 +129,15 @@
     <input id="sbStart" type="datetime-local" step="1">
     <button id="sbNew">New Storm</button>
     <button id="sbExport">Export All Storms</button>
-    <button id="editAllBtn">Edit All Tracks</button>
+    <button id="editAllBtn">Highlight All Tracks</button>
     <button id="lockMapBtn">Lock Map</button>
     
     <div id="hint">
-      <strong>How to use:</strong><br>
-      1. Import or create a storm<br>
-      2. Click map to add points<br>
-      3. <strong>Drag colored circles</strong> to move them<br>
-      4. Use <strong>"Lock Map"</strong> to prevent map movement while dragging<br>
-      5. Click a point to edit time/speed/category<br><br>
+      <strong>How to edit storms:</strong><br>
+      • <strong>Drag any point</strong> to move it<br>
+      • <strong>Drag the FIRST point</strong> (bold border) to move the <u>entire storm</u><br>
+      • Click any point to edit details<br>
+      • Use "Lock Map" to prevent accidental panning<br><br>
       <strong>PAR:</strong> Red dashed area = Philippine Area of Responsibility
     </div>
     
@@ -168,36 +171,10 @@
   let ACTIVE_DRAW = null;
   let EDIT_POPUP = null;
   let PAR_LAYER = null;
-  let EDIT_ALL_MODE = false;
   let MAP_LOCKED = false;
 
   /* =========================================================
-     3.  DATA NORMALISER
-     ========================================================= */
-  function normalizeStormData(arr) {
-    if (!Array.isArray(arr)) throw new Error("JSON must be an array of storms");
-    return arr.map(storm => {
-        if (!storm.path || !Array.isArray(storm.path)) return null;
-        const validPath = storm.path.map(p => {
-            let lat = parseFloat(p.lat ?? p.latitude);
-            let long = parseFloat(p.long ?? p.lon ?? p.lng ?? p.longitude);
-            if (isNaN(lat) || isNaN(long)) { console.warn("Bad point", p); return null; }
-            return {
-                time: p.time ?? "",
-                lat: lat,
-                long: long,
-                speed: p.speed ?? 0,
-                pressure: p.pressure ?? 1000,
-                class: p.class ?? 0
-            };
-        }).filter(Boolean);
-        if (!validPath.length) return null;
-        return { name: storm.name || "UNNAMED", start_time: storm.start_time, path: validPath };
-    }).filter(Boolean);
-  }
-
-  /* =========================================================
-     4.  MAP LOCKING
+     3.  MAP LOCKING
      ========================================================= */
   function toggleMapLock() {
     MAP_LOCKED = !MAP_LOCKED;
@@ -225,12 +202,33 @@
   }
 
   /* =========================================================
-     5.  DRAW HELPERS
+     4.  DATA NORMALISER
      ========================================================= */
-  function classColor(c){
-    return ['#888','#ffd800','#ff7800','#ff3800','#c80000','#8c00ff'][c]||'#888';
+  function normalizeStormData(arr) {
+    if (!Array.isArray(arr)) throw new Error("JSON must be an array of storms");
+    return arr.map(storm => {
+        if (!storm.path || !Array.isArray(storm.path)) return null;
+        const validPath = storm.path.map(p => {
+            let lat = parseFloat(p.lat ?? p.latitude);
+            let long = parseFloat(p.long ?? p.lon ?? p.lng ?? p.longitude);
+            if (isNaN(lat) || isNaN(long)) { console.warn("Bad point", p); return null; }
+            return {
+                time: p.time ?? "",
+                lat: lat,
+                long: long,
+                speed: p.speed ?? 0,
+                pressure: p.pressure ?? 1000,
+                class: p.class ?? 0
+            };
+        }).filter(Boolean);
+        if (!validPath.length) return null;
+        return { name: storm.name || "UNNAMED", start_time: storm.start_time, path: validPath };
+    }).filter(Boolean);
   }
 
+  /* =========================================================
+     5.  DRAW PAR
+     ========================================================= */
   function drawPAR() {
     const parCoords = [[5,115],[15,115],[21,120],[25,120],[25,135],[5,135],[5,115]];
     PAR_LAYER = L.polygon(parCoords, {
@@ -246,51 +244,17 @@
   }
   drawPAR();
 
-  function createPointMarker(storm, idx, faint = false) {
-    const p = storm.path[idx];
-    const m = L.circleMarker([p.lat, p.long], {
-      radius: 6,
-      color: classColor(p.class),
-      fillColor: classColor(p.class),
-      fillOpacity: 1,
-      opacity: faint ? 0.4 : 1,
-      draggable: true,
-      className: 'storm-point'
-    });
-
-    m.stormRef = storm;
-    m.ptIdx = idx;
-
-    m.on('dragstart', function() {
-      // Optional: Auto-lock if not already locked
-      // if (!MAP_LOCKED) toggleMapLock();
-    });
-
-    m.on('dragend', function(e) {
-      const newLatLng = e.target.getLatLng();
-      const s = this.stormRef;
-      const i = this.ptIdx;
-      
-      s.path[i].lat = parseFloat(newLatLng.lat.toFixed(1));
-      s.path[i].long = parseFloat(newLatLng.lng.toFixed(1));
-      
-      if(s._layer) map.removeLayer(s._layer);
-      renderStorm(s, false);
-
-      // Optional: Auto-unlock after drag
-      // if (MAP_LOCKED) toggleMapLock();
-    });
-
-    m.on('click', function(e) {
-      L.DomEvent.stopPropagation(e);
-      openPointEditor(this.stormRef, this.ptIdx);
-    });
-
-    m.bindPopup(`<b>${storm.name}</b> #${idx+1}<br>${p.time}<br>${p.speed} kt / ${p.pressure} hPa`);
-    return m;
+  /* =========================================================
+     6.  RENDER STORM (with full editability)
+     ========================================================= */
+  function classColor(c){
+    return ['#888','#ffd800','#ff7800','#ff3800','#c80000','#8c00ff'][c]||'#888';
   }
 
   function renderStorm(storm, faint = false) {
+    // Remove old layer if exists
+    if (storm._layer) map.removeLayer(storm._layer);
+
     const pts = storm.path;
     const lineCoords = pts.map(p => [p.lat, p.long]);
     const line = L.polyline(lineCoords, {
@@ -300,9 +264,56 @@
     });
 
     const dots = L.layerGroup();
+    
     pts.forEach((p, i) => {
-      const marker = createPointMarker(storm, i, faint);
-      dots.addLayer(marker);
+      const isStart = (i === 0);
+      const radius = isStart ? 7 : 6;
+      
+      const m = L.circleMarker([p.lat, p.long], {
+        radius: radius,
+        color: classColor(p.class),
+        fillColor: classColor(p.class),
+        fillOpacity: 1,
+        opacity: faint ? 0.4 : 1,
+        draggable: true,
+        className: isStart ? 'storm-point first-point' : 'storm-point'
+      });
+
+      m.stormRef = storm;
+      m.ptIdx = i;
+
+      m.on('dragend', function(e) {
+        const newPos = e.target.getLatLng();
+        const s = this.stormRef;
+        const idx = this.ptIdx;
+        const oldPos = L.latLng(s.path[idx].lat, s.path[idx].long);
+        
+        // If dragging the FIRST point → move entire storm
+        if (idx === 0) {
+          const deltaLat = newPos.lat - oldPos.lat;
+          const deltaLng = newPos.lng - oldPos.lng;
+          
+          s.path.forEach(pt => {
+            pt.lat = parseFloat((pt.lat + deltaLat).toFixed(1));
+            pt.long = parseFloat((pt.long + deltaLng).toFixed(1));
+          });
+        } else {
+          // Move just this point
+          s.path[idx].lat = parseFloat(newPos.lat.toFixed(1));
+          s.path[idx].long = parseFloat(newPos.lng.toFixed(1));
+        }
+        
+        // Redraw storm
+        renderStorm(s, faint);
+      });
+
+      m.on('click', function(e) {
+        L.DomEvent.stopPropagation(e);
+        openPointEditor(this.stormRef, this.ptIdx);
+      });
+
+      m.bindPopup(`<b>${storm.name}</b> #${i+1}<br>${p.time}<br>${p.speed} kt / ${p.pressure} hPa`);
+      dots.addLayer(m);
     });
 
     const layer = L.layerGroup([line, dots]);
@@ -311,14 +322,11 @@
   }
 
   function redrawAll(faint = false) {
-    ALL_STORMS.forEach(s => {
-      if(s._layer) map.removeLayer(s._layer);
-      renderStorm(s, faint);
-    });
+    ALL_STORMS.forEach(s => renderStorm(s, faint));
   }
 
   /* =========================================================
-     6.  POINT EDITOR, IMPORT, ETC. (same as before)
+     7.  POINT EDITOR
      ========================================================= */
   function openPointEditor(storm, ptIdx) {
     const p = storm.path[ptIdx];
@@ -331,7 +339,7 @@
 
     const html = `
       <div style="font-size:13px; max-width:250px;">
-        <b>Edit Point</b><br>
+        <b>${ptIdx === 0 ? 'START POINT' : 'Edit Point'}</b><br>
         Storm name: <input id="eName" value="${storm.name}"><br>
         Date/time: <input id="eTime" type="datetime-local" value="${valTime}"><br>
         Lat: <input id="eLat" type="number" step="0.1" value="${p.lat}"><br>
@@ -381,12 +389,14 @@
         p.class = parseInt(document.getElementById('eClass').value);
         map.closePopup(); 
         EDIT_POPUP = null;
-        if(storm._layer) map.removeLayer(storm._layer);
         renderStorm(storm, false);
       };
     }, 100);
   }
 
+  /* =========================================================
+     8.  FILE IMPORT
+     ========================================================= */
   document.getElementById('file').addEventListener('change', ev => {
     [...ev.target.files].forEach(file => {
       const reader = new FileReader();
@@ -411,6 +421,9 @@
     });
   });
 
+  /* =========================================================
+     9.  UI CONTROLS
+     ========================================================= */
   const $ = id => document.getElementById(id);
   $('sbStart').value = new Date().toISOString().slice(0,16);
 
@@ -497,18 +510,21 @@
     document.body.appendChild(a); a.click(); a.remove();
   };
 
-  const editAllBtn = $('editAllBtn');
-  editAllBtn.addEventListener('click', () => {
-    EDIT_ALL_MODE = !EDIT_ALL_MODE;
-    editAllBtn.classList.toggle('edit-mode', EDIT_ALL_MODE);
-    editAllBtn.textContent = EDIT_ALL_MODE ? 'Done Editing' : 'Edit All Tracks';
-    redrawAll(false);
+  // "Highlight All Tracks" toggles visual emphasis
+  let HIGHLIGHT_MODE = false;
+  $('editAllBtn').addEventListener('click', () => {
+    HIGHLIGHT_MODE = !HIGHLIGHT_MODE;
+    $('editAllBtn').classList.toggle('edit-mode', HIGHLIGHT_MODE);
+    $('editAllBtn').textContent = HIGHLIGHT_MODE ? 'Normal View' : 'Highlight All Tracks';
+    redrawAll(!HIGHLIGHT_MODE); // faint when not highlighted
   });
 
-  // Lock Map Button
-  const lockMapBtn = $('lockMapBtn');
-  lockMapBtn.addEventListener('click', toggleMapLock);
+  // Lock Map
+  $('lockMapBtn').addEventListener('click', toggleMapLock);
 
+  /* =========================================================
+     10. MAP CLICK (ADD POINT)
+     ========================================================= */
   map.on('click', e => {
     if(!ACTIVE_DRAW) return;
     const lat = snap(e.latlng.lat);
@@ -575,6 +591,9 @@
     }, 100);
   });
 
+  /* =========================================================
+     11. DRAG CURSOR
+     ========================================================= */
   const style = document.createElement('style');
   style.textContent = `
     .leaflet-container .storm-point {
@@ -582,6 +601,10 @@
     }
     .leaflet-container .storm-point.leaflet-dragging {
       cursor: grabbing !important;
+    }
+    .first-point {
+      stroke: #000 !important;
+      stroke-width: 2px !important;
     }
   `;
   document.head.appendChild(style);
