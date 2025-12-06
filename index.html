@@ -66,6 +66,12 @@
     #panel button#editAllBtn.edit-mode {
       background: #c0392b;
     }
+    #panel button#lockMapBtn {
+      background: #7f8c8d;
+    }
+    #panel button#lockMapBtn.locked {
+      background: #c0392b;
+    }
     .sb-marker {
       background: #ff7800;
       color: #fff;
@@ -120,14 +126,15 @@
     <button id="sbNew">New Storm</button>
     <button id="sbExport">Export All Storms</button>
     <button id="editAllBtn">Edit All Tracks</button>
+    <button id="lockMapBtn">Lock Map</button>
     
     <div id="hint">
       <strong>How to use:</strong><br>
       1. Import or create a storm<br>
       2. Click map to add points<br>
-      3. <strong>Drag any colored circle</strong> to move it<br>
-      4. Click a point to edit details<br>
-      5. Use "Edit All Tracks" to manage all storms<br><br>
+      3. <strong>Drag colored circles</strong> to move them<br>
+      4. Use <strong>"Lock Map"</strong> to prevent map movement while dragging<br>
+      5. Click a point to edit time/speed/category<br><br>
       <strong>PAR:</strong> Red dashed area = Philippine Area of Responsibility
     </div>
     
@@ -157,11 +164,12 @@
   /* =========================================================
      2.  GLOBAL STATE
      ========================================================= */
-  const ALL_STORMS = [];   // {name, start_time, path[{lat, long, ...}]}
+  const ALL_STORMS = [];
   let ACTIVE_DRAW = null;
   let EDIT_POPUP = null;
   let PAR_LAYER = null;
-  let EDIT_ALL_MODE = false;  // New: tracks editable by default
+  let EDIT_ALL_MODE = false;
+  let MAP_LOCKED = false;
 
   /* =========================================================
      3.  DATA NORMALISER
@@ -189,13 +197,40 @@
   }
 
   /* =========================================================
-     4.  DRAW HELPERS
+     4.  MAP LOCKING
+     ========================================================= */
+  function toggleMapLock() {
+    MAP_LOCKED = !MAP_LOCKED;
+    const lockBtn = document.getElementById('lockMapBtn');
+    
+    if (MAP_LOCKED) {
+      map.dragging.disable();
+      map.touchZoom.disable();
+      map.doubleClickZoom.disable();
+      map.scrollWheelZoom.disable();
+      map.boxZoom.disable();
+      map.keyboard.disable();
+      lockBtn.textContent = 'Unlock Map';
+      lockBtn.classList.add('locked');
+    } else {
+      map.dragging.enable();
+      map.touchZoom.enable();
+      map.doubleClickZoom.enable();
+      map.scrollWheelZoom.enable();
+      map.boxZoom.enable();
+      map.keyboard.enable();
+      lockBtn.textContent = 'Lock Map';
+      lockBtn.classList.remove('locked');
+    }
+  }
+
+  /* =========================================================
+     5.  DRAW HELPERS
      ========================================================= */
   function classColor(c){
     return ['#888','#ffd800','#ff7800','#ff3800','#c80000','#8c00ff'][c]||'#888';
   }
 
-  // Draw PAR boundary
   function drawPAR() {
     const parCoords = [[5,115],[15,115],[21,120],[25,120],[25,135],[5,135],[5,115]];
     PAR_LAYER = L.polygon(parCoords, {
@@ -211,7 +246,6 @@
   }
   drawPAR();
 
-  // Create a draggable marker for a storm point
   function createPointMarker(storm, idx, faint = false) {
     const p = storm.path[idx];
     const m = L.circleMarker([p.lat, p.long], {
@@ -221,14 +255,17 @@
       fillOpacity: 1,
       opacity: faint ? 0.4 : 1,
       draggable: true,
-      // Show hand cursor to indicate draggability
       className: 'storm-point'
     });
 
     m.stormRef = storm;
     m.ptIdx = idx;
 
-    // Handle drag
+    m.on('dragstart', function() {
+      // Optional: Auto-lock if not already locked
+      // if (!MAP_LOCKED) toggleMapLock();
+    });
+
     m.on('dragend', function(e) {
       const newLatLng = e.target.getLatLng();
       const s = this.stormRef;
@@ -238,10 +275,12 @@
       s.path[i].long = parseFloat(newLatLng.lng.toFixed(1));
       
       if(s._layer) map.removeLayer(s._layer);
-      renderStorm(s, false); // Always render full opacity when editing
+      renderStorm(s, false);
+
+      // Optional: Auto-unlock after drag
+      // if (MAP_LOCKED) toggleMapLock();
     });
 
-    // Handle click to edit details
     m.on('click', function(e) {
       L.DomEvent.stopPropagation(e);
       openPointEditor(this.stormRef, this.ptIdx);
@@ -279,7 +318,7 @@
   }
 
   /* =========================================================
-     5.  POINT EDITOR
+     6.  POINT EDITOR, IMPORT, ETC. (same as before)
      ========================================================= */
   function openPointEditor(storm, ptIdx) {
     const p = storm.path[ptIdx];
@@ -348,9 +387,6 @@
     }, 100);
   }
 
-  /* =========================================================
-     6.  FILE IMPORT
-     ========================================================= */
   document.getElementById('file').addEventListener('change', ev => {
     [...ev.target.files].forEach(file => {
       const reader = new FileReader();
@@ -375,9 +411,6 @@
     });
   });
 
-  /* =========================================================
-     7.  NEW-STORM DRAWING & EXPORT
-     ========================================================= */
   const $ = id => document.getElementById(id);
   $('sbStart').value = new Date().toISOString().slice(0,16);
 
@@ -441,7 +474,7 @@
       ACTIVE_DRAW = null;
     }
 
-    if(!ALL_STORMs.length) { alert('No storms to export'); return; }
+    if(!ALL_STORMS.length) { alert('No storms to export'); return; }
 
     const exportData = ALL_STORMS.map(s => ({
       name: s.name,
@@ -464,25 +497,20 @@
     document.body.appendChild(a); a.click(); a.remove();
   };
 
-  /* =========================================================
-     8.  EDIT ALL TRACKS BUTTON
-     ========================================================= */
   const editAllBtn = $('editAllBtn');
   editAllBtn.addEventListener('click', () => {
     EDIT_ALL_MODE = !EDIT_ALL_MODE;
     editAllBtn.classList.toggle('edit-mode', EDIT_ALL_MODE);
     editAllBtn.textContent = EDIT_ALL_MODE ? 'Done Editing' : 'Edit All Tracks';
-    
-    // Redraw all storms with full interactivity
     redrawAll(false);
   });
 
-  /* =========================================================
-     9.  MAP CLICK (ADD POINT FOR ACTIVE DRAW)
-     ========================================================= */
+  // Lock Map Button
+  const lockMapBtn = $('lockMapBtn');
+  lockMapBtn.addEventListener('click', toggleMapLock);
+
   map.on('click', e => {
     if(!ACTIVE_DRAW) return;
-
     const lat = snap(e.latlng.lat);
     const long = snap(e.latlng.lng);
     const idx = ACTIVE_DRAW.points.length;
@@ -491,7 +519,6 @@
     const defSpeed = prev ? prev.speed : '35';
     const defPres = prev ? prev.pressure : '1000';
     const defClass = prev ? prev.class : 1;
-
     const tempPoint = { lat, long, time: epoch, speed: defSpeed, pressure: defPres, class: defClass };
 
     const html = `
@@ -548,9 +575,6 @@
     }, 100);
   });
 
-  /* =========================================================
-     10.  CUSTOM CSS FOR DRAG CURSOR
-     ========================================================= */
   const style = document.createElement('style');
   style.textContent = `
     .leaflet-container .storm-point {
