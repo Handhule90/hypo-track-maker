@@ -274,10 +274,10 @@
         renderStorm(s, faint);
       });
       
-      marker.on('click', e => {
-        L.DomEvent.stopPropagation(e);
-        openPointEditor(storm, idx);
-      });
+marker.on('click', e => {
+  L.DomEvent.stopPropagation(e);
+  openPointEditor(storm, i); // ✅ use `i` (the forEach index)
+});
       
       marker.bindPopup(`<b>${storm.name}</b> #${i+1}<br>${p.time}<br>${p.speed} kt / ${p.pressure} hPa`);
       dots.addLayer(marker);
